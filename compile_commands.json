@@ -1,0 +1,6 @@
+[
+{
+  "directory": "/home/edmorley/dev/github/EdMUK/linscribe",
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-Wall", "-Werror", "-O0", "-std=c++17", "-o", "build/.objs/linscribe/linux/x86_64/debug/src/main.cpp.o", "src/main.cpp"],
+  "file": "src/main.cpp"
+}]
