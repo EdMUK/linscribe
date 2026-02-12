@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Linscribe
+Comment=Voice notes and speech-to-text dictation
+Exec=linscribe
+Icon=linscribe
+Categories=Audio;Utility;GTK;
+Terminal=false
+Keywords=voice;transcription;dictation;speech;

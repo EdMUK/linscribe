@@ -1572,7 +1572,7 @@ static void stop_dictation(AppState *state) {
     // Restore tray icon
     if (state->indicator != nullptr) {
         app_indicator_set_icon_full(state->indicator,
-                                     "accessories-text-editor", "Linscribe");
+                                     "linscribe", "Linscribe");
     }
 
     // Free xdo
@@ -1598,6 +1598,30 @@ static void update_dictation_menu_label(AppState *state) {
     gtk_menu_item_set_label(GTK_MENU_ITEM(state->dictation_menu_item),
                             state->dictating ? "Stop Speaking"
                                              : "Speak To Type");
+}
+
+// --- Icon path ---
+
+// Find the directory containing linscribe.svg by walking up from the
+// executable location.  In development the binary lives under
+// build/linux/x86_64/<mode>/ while the SVG sits in the project root.
+// In an AppImage linuxdeploy installs the icon next to the binary.
+static std::string find_icon_dir() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto exe = fs::read_symlink("/proc/self/exe", ec);
+    if (ec) return {};
+    auto dir = exe.parent_path();
+    // Walk up at most 8 levels looking for linscribe.svg
+    for (int i = 0; i < 8; ++i) {
+        if (fs::exists(dir / "linscribe.svg", ec)) {
+            return dir.string();
+        }
+        auto parent = dir.parent_path();
+        if (parent == dir) break;
+        dir = parent;
+    }
+    return {};
 }
 
 // --- Tray menu ---
@@ -1880,9 +1904,13 @@ static void activate(GApplication *app, gpointer user_data) {
     // Tray icon (stored in AppState for dictation icon changes)
     G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     state->indicator = app_indicator_new(
-        "linscribe", "accessories-text-editor",
+        "linscribe", "linscribe",
         APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
     G_GNUC_END_IGNORE_DEPRECATIONS
+    auto icon_dir = find_icon_dir();
+    if (!icon_dir.empty()) {
+        app_indicator_set_icon_theme_path(state->indicator, icon_dir.c_str());
+    }
     app_indicator_set_status(state->indicator, APP_INDICATOR_STATUS_ACTIVE);
     app_indicator_set_menu(state->indicator, GTK_MENU(menu));
 

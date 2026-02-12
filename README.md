@@ -28,6 +28,27 @@ Powered by [Mistral's Voxtral](https://docs.mistral.ai/capabilities/audio/) real
 - Starts minimised to tray &mdash; open the voice notes window from the menu when needed
 - Quick access to Transcribe (open window), Speak To Type, Settings, and Quit
 
+## Install
+
+Download the latest AppImage from the [GitHub Releases](https://github.com/EdMUK/linscribe/releases) page:
+
+```bash
+chmod +x Linscribe-*-x86_64.AppImage
+./Linscribe-*-x86_64.AppImage
+```
+
+### Autostart
+
+To start Linscribe automatically on login, copy the `.desktop` file to your XDG autostart directory with the `Exec` path pointing to your AppImage:
+
+```bash
+mkdir -p ~/.config/autostart
+cp linscribe.desktop ~/.config/autostart/
+sed -i "s|Exec=linscribe|Exec=$HOME/path/to/Linscribe-x86_64.AppImage|" ~/.config/autostart/linscribe.desktop
+```
+
+Replace `$HOME/path/to/Linscribe-x86_64.AppImage` with the actual path to your downloaded AppImage.
+
 ## Requirements
 
 - Ubuntu 22.04+ or similar Linux distribution
