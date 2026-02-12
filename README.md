@@ -14,10 +14,10 @@ Powered by [Mistral's Voxtral](https://docs.mistral.ai/capabilities/audio/) real
 - Copy transcription text to clipboard
 - **Audio device selection** &mdash; choose any input source in Settings, including output monitors (e.g. "Monitor of Built-in Audio") to transcribe system audio playing through speakers or headphones
 
-**Dictation Mode**
+**Speak To Type**
 - Activate from the system tray menu to start typing speech into any focused application
 - Works with terminals, editors, browsers, and any other window
-- Tray icon changes to indicate active dictation
+- Tray icon changes to indicate active speech-to-type
 - Automatic detection of the best available typing backend:
   - **Wayland** (GNOME, KDE, Sway, etc.): `ydotool`, `wtype`, or `xdotool`
   - **X11**: `libxdo` (direct, no subprocess overhead)
@@ -25,7 +25,8 @@ Powered by [Mistral's Voxtral](https://docs.mistral.ai/capabilities/audio/) real
 
 **System Tray**
 - Runs as a tray application &mdash; close the window and it keeps running
-- Quick access to Transcribe (open window), Start/Stop Dictation, Settings, and Quit
+- Starts minimised to tray &mdash; open the voice notes window from the menu when needed
+- Quick access to Transcribe (open window), Speak To Type, Settings, and Quit
 
 ## Requirements
 
@@ -109,12 +110,12 @@ The saved key is stored in `~/.local/share/linscribe/mistral_api_key`.
 4. Click **Save** to keep the note or **Discard** to throw it away
 5. Saved notes appear in the list with playback, transcribe, copy, and delete controls
 
-### Dictation mode
+### Speak To Type
 
-1. Click the tray icon and select **Start Dictation**
+1. Click the tray icon and select **Speak To Type**
 2. Focus the window where you want text to appear (terminal, editor, browser, etc.)
 3. Speak naturally &mdash; transcribed text is typed into the focused application in real time
-4. Click **Stop Dictation** in the tray menu to finish
+4. Click **Stop Speaking** in the tray menu to finish
 
 ## Data storage
 

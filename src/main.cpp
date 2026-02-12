@@ -1596,8 +1596,8 @@ static void on_hotkey_pressed(const char * /*keystring*/, void *user_data) {
 static void update_dictation_menu_label(AppState *state) {
     if (state->dictation_menu_item == nullptr) return;
     gtk_menu_item_set_label(GTK_MENU_ITEM(state->dictation_menu_item),
-                            state->dictating ? "Stop Dictation"
-                                             : "Start Dictation");
+                            state->dictating ? "Stop Speaking"
+                                             : "Speak To Type");
 }
 
 // --- Tray menu ---
@@ -1766,7 +1766,7 @@ static void activate(GApplication *app, gpointer user_data) {
     // Create window
     state->window = gtk_application_window_new(GTK_APPLICATION(app));
     gtk_window_set_title(GTK_WINDOW(state->window), "Linscribe");
-    gtk_window_set_default_size(GTK_WINDOW(state->window), 350, 450);
+    gtk_window_set_default_size(GTK_WINDOW(state->window), 640, 550);
 
     // Hide on close instead of destroying
     g_signal_connect(state->window, "delete-event",
@@ -1858,7 +1858,7 @@ static void activate(GApplication *app, gpointer user_data) {
 
     // Dictation menu item (hidden if transcription not available)
     state->dictation_menu_item =
-        gtk_menu_item_new_with_label("Start Dictation");
+        gtk_menu_item_new_with_label("Speak To Type");
     g_signal_connect(state->dictation_menu_item, "activate",
                      G_CALLBACK(on_menu_dictation), state);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), state->dictation_menu_item);
@@ -1902,8 +1902,6 @@ static void activate(GApplication *app, gpointer user_data) {
         g_message("Wayland session — global hotkey unavailable, "
                   "use tray menu for dictation");
     }
-
-    gtk_widget_show_all(state->window);
 
     // Connect to PulseAudio (once)
     if (state->pa_ctx == nullptr) {
