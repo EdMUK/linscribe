@@ -94,6 +94,10 @@ struct AppState {
     AppIndicator *indicator = nullptr;
     std::string hotkey;
     GtkWidget *dictation_menu_item = nullptr;
+
+    // Audio device selection
+    std::vector<std::pair<std::string, std::string>> audio_sources;  // (pa_name, description)
+    std::string audio_device;  // selected device pa_name, empty = default
 };
 
 // Forward declarations
@@ -669,7 +673,10 @@ static void start_recording(AppState *state) {
     attr.minreq = static_cast<uint32_t>(-1);
     attr.fragsize = 4410 * sizeof(int16_t); // ~50ms at 44100 Hz mono S16LE
 
-    if (pa_stream_connect_record(state->stream, nullptr, &attr,
+    const char *dev = state->audio_device.empty()
+                          ? nullptr
+                          : state->audio_device.c_str();
+    if (pa_stream_connect_record(state->stream, dev, &attr,
                                  PA_STREAM_ADJUST_LATENCY) < 0) {
         gtk_label_set_text(GTK_LABEL(state->label), "Failed to connect stream");
         pa_stream_unref(state->stream);
@@ -1126,12 +1133,23 @@ static void on_record_toggled(GtkWidget * /*button*/, gpointer userdata) {
 
 // --- PulseAudio context ---
 
+static void on_source_info(pa_context * /*c*/, const pa_source_info *info,
+                           int eol, void *userdata) {
+    if (eol > 0) return;
+    if (info == nullptr) return;
+    auto *state = static_cast<AppState *>(userdata);
+    state->audio_sources.emplace_back(info->name, info->description);
+}
+
 static void on_pa_context_state(pa_context *c, void *userdata) {
     auto *state = static_cast<AppState *>(userdata);
 
     switch (pa_context_get_state(c)) {
     case PA_CONTEXT_READY:
         state->pa_ready = true;
+        state->audio_sources.clear();
+        pa_operation_unref(
+            pa_context_get_source_info_list(c, on_source_info, state));
         if (state->record_button != nullptr) {
             gtk_widget_set_sensitive(state->record_button, TRUE);
         }
@@ -1238,6 +1256,28 @@ static void save_hotkey(AppState *state, const std::string &key) {
     std::ofstream out(get_hotkey_path(state));
     if (out) {
         out << key;
+    }
+}
+
+static std::string get_audio_device_path(AppState *state) {
+    return state->data_dir + "/audio_device";
+}
+
+static std::string load_saved_audio_device(AppState *state) {
+    std::ifstream in(get_audio_device_path(state));
+    if (!in) return "";
+    std::string dev;
+    std::getline(in, dev);
+    while (!dev.empty() && (dev.back() == '\n' || dev.back() == '\r' ||
+                            dev.back() == ' '))
+        dev.pop_back();
+    return dev;
+}
+
+static void save_audio_device(AppState *state, const std::string &dev) {
+    std::ofstream out(get_audio_device_path(state));
+    if (out) {
+        out << dev;
     }
 }
 
@@ -1487,7 +1527,10 @@ static void start_dictation(AppState *state) {
     attr.minreq = static_cast<uint32_t>(-1);
     attr.fragsize = 4410 * sizeof(int16_t);
 
-    if (pa_stream_connect_record(state->stream, nullptr, &attr,
+    const char *dev = state->audio_device.empty()
+                          ? nullptr
+                          : state->audio_device.c_str();
+    if (pa_stream_connect_record(state->stream, dev, &attr,
                                   PA_STREAM_ADJUST_LATENCY) < 0) {
         g_warning("Failed to connect dictation stream");
         pa_stream_unref(state->stream);
@@ -1590,6 +1633,25 @@ static void on_menu_settings(GtkMenuItem * /*item*/, gpointer user_data) {
     gtk_container_set_border_width(GTK_CONTAINER(content), 12);
     gtk_box_set_spacing(GTK_BOX(content), 8);
 
+    // Audio device dropdown
+    GtkWidget *device_label = gtk_label_new("Audio Device:");
+    gtk_label_set_xalign(GTK_LABEL(device_label), 0.0);
+    gtk_box_pack_start(GTK_BOX(content), device_label, FALSE, FALSE, 0);
+
+    GtkWidget *device_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(device_combo), "", "Default");
+    int active_index = 0;
+    for (int i = 0; i < static_cast<int>(state->audio_sources.size()); i++) {
+        const auto &src = state->audio_sources[static_cast<size_t>(i)];
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(device_combo),
+                                   src.first.c_str(), src.second.c_str());
+        if (src.first == state->audio_device) {
+            active_index = i + 1;
+        }
+    }
+    gtk_combo_box_set_active(GTK_COMBO_BOX(device_combo), active_index);
+    gtk_box_pack_start(GTK_BOX(content), device_combo, FALSE, FALSE, 0);
+
     GtkWidget *label = gtk_label_new("Mistral API Key:");
     gtk_label_set_xalign(GTK_LABEL(label), 0.0);
     gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 0);
@@ -1622,6 +1684,13 @@ static void on_menu_settings(GtkMenuItem * /*item*/, gpointer user_data) {
     gtk_widget_show_all(content);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        // Save audio device selection
+        const gchar *device_id =
+            gtk_combo_box_get_active_id(GTK_COMBO_BOX(device_combo));
+        std::string new_device(device_id ? device_id : "");
+        state->audio_device = new_device;
+        save_audio_device(state, new_device);
+
         const char *new_key = gtk_entry_get_text(GTK_ENTRY(entry));
         std::string key_str(new_key ? new_key : "");
 
@@ -1688,6 +1757,7 @@ static void activate(GApplication *app, gpointer user_data) {
 
     // Initialize data directory and load existing notes
     ensure_data_dir(state);
+    state->audio_device = load_saved_audio_device(state);
     load_notes(state);
 
     // Initialize transcription service

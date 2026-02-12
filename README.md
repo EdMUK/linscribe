@@ -12,6 +12,7 @@ Powered by [Mistral's Voxtral](https://docs.mistral.ai/capabilities/audio/) real
 - Real-time transcription displayed live as you record
 - Batch transcription of saved notes with one click
 - Copy transcription text to clipboard
+- **Audio device selection** &mdash; choose any input source in Settings, including output monitors (e.g. "Monitor of Built-in Audio") to transcribe system audio playing through speakers or headphones
 
 **Dictation Mode**
 - Activate from the system tray menu to start typing speech into any focused application
@@ -125,6 +126,7 @@ All data is stored in `~/.local/share/linscribe/`:
 | `note_*.txt` | Transcription sidecar files |
 | `mistral_api_key` | Saved API key |
 | `dictation_hotkey` | Custom hotkey binding (default: `<Ctrl><Shift>space`) |
+| `audio_device` | Selected PulseAudio source name (empty = system default) |
 
 ## Tech stack
 
