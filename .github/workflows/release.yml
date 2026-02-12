@@ -31,6 +31,7 @@ jobs:
             libjson-glib-dev \
             libkeybinder-3.0-dev \
             libxdo-dev \
+            glib-networking \
             fuse \
             file
 
@@ -54,14 +55,26 @@ jobs:
 
       - name: Build AppImage
         run: |
-          export OUTPUT="Linscribe-x86_64.AppImage"
+          # First pass: populate AppDir with binary, desktop file, icon, and GTK libs
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
             --appdir AppDir \
             --executable build/linux/x86_64/release/linscribe \
             --desktop-file linscribe.desktop \
             --icon-file linscribe.svg \
-            --plugin gtk \
-            --output appimage
+            --plugin gtk
+
+          # Bundle GIO modules (TLS backend from glib-networking needed for HTTPS)
+          GIO_MODULEDIR="$(pkg-config --variable=giomoduledir gio-2.0)"
+          APPDIR_GIO="AppDir/usr/lib/x86_64-linux-gnu/gio/modules"
+          mkdir -p "$APPDIR_GIO"
+          cp "$GIO_MODULEDIR"/*.so "$APPDIR_GIO"/
+          gio-querymodules "$APPDIR_GIO"
+
+          # Second pass: produce the AppImage
+          OUTPUT="Linscribe-x86_64.AppImage" \
+            ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
+              --appdir AppDir \
+              --output appimage
 
       - name: Rename AppImage
         run: |
