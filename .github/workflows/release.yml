@@ -70,6 +70,14 @@ jobs:
           cp "$GIO_MODULEDIR"/*.so "$APPDIR_GIO"/
           gio-querymodules "$APPDIR_GIO"
 
+          # AppRun hook so GLib finds the bundled GIO modules (the GTK
+          # plugin doesn't set this, so without it HTTPS fails when
+          # launched outside a terminal)
+          mkdir -p AppDir/apprun-hooks
+          cat > AppDir/apprun-hooks/gio-modules.sh << 'HOOK'
+          export GIO_MODULE_DIR="${APPDIR}/usr/lib/x86_64-linux-gnu/gio/modules"
+          HOOK
+
           # Second pass: produce the AppImage
           OUTPUT="Linscribe-x86_64.AppImage" \
             ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
