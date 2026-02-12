@@ -1328,8 +1328,9 @@ static TypingTool detect_typing_tool() {
     gint exit_status = 0;
 
     // Try wtype (wlroots compositors only — fails on GNOME)
+    gchar *wtype_argv[] = {(gchar *)"wtype", (gchar *)"", nullptr};
     if (g_spawn_sync(nullptr,
-                     (gchar *[]){(gchar *)"wtype", (gchar *)"", nullptr},
+                     wtype_argv,
                      nullptr,
                      static_cast<GSpawnFlags>(G_SPAWN_SEARCH_PATH |
                          G_SPAWN_STDOUT_TO_DEV_NULL |
@@ -1344,9 +1345,10 @@ static TypingTool detect_typing_tool() {
     g_clear_error(&error);
 
     // Try ydotool (works on all Wayland compositors via uinput)
+    gchar *ydotool_argv[] = {(gchar *)"ydotool", (gchar *)"type",
+                             (gchar *)"", nullptr};
     if (g_spawn_sync(nullptr,
-                     (gchar *[]){(gchar *)"ydotool", (gchar *)"type",
-                                 (gchar *)"", nullptr},
+                     ydotool_argv,
                      nullptr,
                      static_cast<GSpawnFlags>(G_SPAWN_SEARCH_PATH |
                          G_SPAWN_STDOUT_TO_DEV_NULL |
@@ -1361,9 +1363,10 @@ static TypingTool detect_typing_tool() {
     g_clear_error(&error);
 
     // Try xdotool (X11/XWayland windows only)
+    gchar *xdotool_argv[] = {(gchar *)"xdotool", (gchar *)"type",
+                             (gchar *)"", nullptr};
     if (g_spawn_sync(nullptr,
-                     (gchar *[]){(gchar *)"xdotool", (gchar *)"type",
-                                 (gchar *)"", nullptr},
+                     xdotool_argv,
                      nullptr,
                      static_cast<GSpawnFlags>(G_SPAWN_SEARCH_PATH |
                          G_SPAWN_STDOUT_TO_DEV_NULL |
@@ -1939,7 +1942,11 @@ static void activate(GApplication *app, gpointer user_data) {
 
 int main(int argc, char *argv[]) {
     GtkApplication *app = gtk_application_new(
-        "com.edmorley.linscribe", G_APPLICATION_DEFAULT_FLAGS);
+#if GLIB_CHECK_VERSION(2, 74, 0)
+        "com.edmuk.linscribe", G_APPLICATION_DEFAULT_FLAGS);
+#else
+        "com.edmuk.linscribe", G_APPLICATION_FLAGS_NONE);
+#endif
 
     // Keep the app alive even when the window is hidden
     g_application_hold(G_APPLICATION(app));
