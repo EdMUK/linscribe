@@ -1500,7 +1500,7 @@ static void start_dictation(AppState *state) {
 
     // Change tray icon to indicate dictation
     if (state->indicator != nullptr) {
-        app_indicator_set_icon_full(state->indicator, "media-record",
+        app_indicator_set_icon_full(state->indicator, "linscribe-recording",
                                      "Dictating");
     }
 
