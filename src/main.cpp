@@ -32,6 +32,8 @@ struct VoiceNote {
     double duration_seconds;
     std::string transcription;
     bool transcribing = false;
+    std::string diarized_transcription;
+    bool diarizing = false;
 };
 
 struct AppState {
@@ -80,7 +82,9 @@ struct AppState {
     SoupWebsocketConnection *ws_conn = nullptr;
     bool ws_ready = false;
     std::string live_transcription;
-    GtkWidget *live_transcription_label = nullptr;
+    GtkWidget *live_transcription_scroll = nullptr;
+    GtkWidget *live_transcription_view = nullptr;
+    std::string live_transcription_tmp_path;
 
     // Resampler state (44100→16000, preserved between PulseAudio chunks)
     double resample_phase = 0.0;
@@ -112,8 +116,14 @@ static void start_dictation(AppState *state);
 static void stop_dictation(AppState *state);
 static void update_dictation_menu_label(AppState *state);
 static void type_text(AppState *state, const char *text);
+static void diarize_note(AppState *state, int note_index);
 
 struct TranscribeCallbackData {
+    AppState *state;
+    int note_index;
+};
+
+struct DiarizeCallbackData {
     AppState *state;
     int note_index;
 };
@@ -288,6 +298,18 @@ static void load_notes(AppState *state) {
             }
         }
 
+        // Load diarized transcription from .diarized.txt sidecar if it exists
+        std::filesystem::path diarized_path(note.filepath);
+        diarized_path.replace_extension(".diarized.txt");
+        if (std::filesystem::exists(diarized_path)) {
+            std::ifstream diarized_file(diarized_path);
+            if (diarized_file) {
+                note.diarized_transcription = std::string(
+                    std::istreambuf_iterator<char>(diarized_file),
+                    std::istreambuf_iterator<char>());
+            }
+        }
+
         state->notes.push_back(std::move(note));
     }
 
@@ -449,6 +471,19 @@ static std::vector<int16_t> resample_44100_to_16000(const int16_t *input,
     return output;
 }
 
+// Auto-scroll the live transcription text view to the bottom
+static void scroll_transcription_to_bottom(AppState *state) {
+    if (state->live_transcription_view == nullptr) return;
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(
+        GTK_TEXT_VIEW(state->live_transcription_view));
+    GtkTextIter end;
+    gtk_text_buffer_get_end_iter(buf, &end);
+    GtkTextMark *mark = gtk_text_buffer_create_mark(buf, nullptr, &end, FALSE);
+    gtk_text_view_scroll_mark_onscreen(
+        GTK_TEXT_VIEW(state->live_transcription_view), mark);
+    gtk_text_buffer_delete_mark(buf, mark);
+}
+
 // --- Real-time transcription (WebSocket) ---
 
 static void on_ws_message(SoupWebsocketConnection * /*conn*/, gint /*type*/,
@@ -489,10 +524,20 @@ static void on_ws_message(SoupWebsocketConnection * /*conn*/, gint /*type*/,
                     type_text(state, text);
                 } else {
                     state->live_transcription += text;
-                    if (state->live_transcription_label != nullptr) {
-                        gtk_label_set_text(
-                            GTK_LABEL(state->live_transcription_label),
-                            state->live_transcription.c_str());
+                    if (state->live_transcription_view != nullptr) {
+                        GtkTextBuffer *buf = gtk_text_view_get_buffer(
+                            GTK_TEXT_VIEW(state->live_transcription_view));
+                        gtk_text_buffer_set_text(
+                            buf, state->live_transcription.c_str(), -1);
+                        scroll_transcription_to_bottom(state);
+                    }
+                    // Append delta to temp file for crash safety
+                    if (!state->live_transcription_tmp_path.empty()) {
+                        std::ofstream tmp(state->live_transcription_tmp_path,
+                                          std::ios::app);
+                        if (tmp) {
+                            tmp << text;
+                        }
                     }
                 }
             }
@@ -693,11 +738,21 @@ static void start_recording(AppState *state) {
     // Start real-time transcription
     state->live_transcription.clear();
     state->resample_phase = 0.0;
-    if (state->live_transcription_label != nullptr) {
-        gtk_label_set_text(GTK_LABEL(state->live_transcription_label), "");
-        gtk_widget_set_no_show_all(state->live_transcription_label, FALSE);
-        gtk_widget_show(state->live_transcription_label);
+    if (state->live_transcription_view != nullptr) {
+        GtkTextBuffer *buf = gtk_text_view_get_buffer(
+            GTK_TEXT_VIEW(state->live_transcription_view));
+        gtk_text_buffer_set_text(buf, "", -1);
     }
+    if (state->live_transcription_scroll != nullptr) {
+        gtk_widget_set_no_show_all(state->live_transcription_scroll, FALSE);
+        gtk_widget_show_all(state->live_transcription_scroll);
+    }
+
+    // Set up temp file for crash-safe incremental writes
+    state->live_transcription_tmp_path =
+        state->data_dir + "/.transcription_in_progress.txt.partial";
+    { std::ofstream(state->live_transcription_tmp_path, std::ios::trunc); }
+
     ws_connect(state);
 }
 
@@ -756,10 +811,17 @@ static void on_save_clicked(GtkWidget * /*button*/, gpointer userdata) {
 
     state->audio_buffer.clear();
     state->live_transcription.clear();
-    if (state->live_transcription_label != nullptr) {
-        gtk_widget_hide(state->live_transcription_label);
-        gtk_widget_set_no_show_all(state->live_transcription_label, TRUE);
+    if (state->live_transcription_scroll != nullptr) {
+        gtk_widget_hide(state->live_transcription_scroll);
+        gtk_widget_set_no_show_all(state->live_transcription_scroll, TRUE);
     }
+
+    // Clean up temp file
+    if (!state->live_transcription_tmp_path.empty()) {
+        std::filesystem::remove(state->live_transcription_tmp_path);
+        state->live_transcription_tmp_path.clear();
+    }
+
     gtk_widget_hide(state->save_discard_box);
     gtk_widget_set_no_show_all(state->save_discard_box, TRUE);
 
@@ -774,10 +836,17 @@ static void on_discard_clicked(GtkWidget * /*button*/, gpointer userdata) {
 
     state->audio_buffer.clear();
     state->live_transcription.clear();
-    if (state->live_transcription_label != nullptr) {
-        gtk_widget_hide(state->live_transcription_label);
-        gtk_widget_set_no_show_all(state->live_transcription_label, TRUE);
+    if (state->live_transcription_scroll != nullptr) {
+        gtk_widget_hide(state->live_transcription_scroll);
+        gtk_widget_set_no_show_all(state->live_transcription_scroll, TRUE);
     }
+
+    // Clean up temp file
+    if (!state->live_transcription_tmp_path.empty()) {
+        std::filesystem::remove(state->live_transcription_tmp_path);
+        state->live_transcription_tmp_path.clear();
+    }
+
     gtk_widget_hide(state->save_discard_box);
     gtk_widget_set_no_show_all(state->save_discard_box, TRUE);
     gtk_label_set_text(GTK_LABEL(state->label), "Recording discarded");
@@ -823,6 +892,11 @@ static void on_delete_clicked(GtkWidget *button, gpointer userdata) {
     std::filesystem::path txt_path(filepath);
     txt_path.replace_extension(".txt");
     std::filesystem::remove(txt_path);
+
+    // Also delete the .diarized.txt sidecar if it exists
+    std::filesystem::path diarized_path(filepath);
+    diarized_path.replace_extension(".diarized.txt");
+    std::filesystem::remove(diarized_path);
 
     load_notes(state);
     refresh_notes_list(state);
@@ -976,6 +1050,220 @@ static void transcribe_note(AppState *state, int note_index) {
     g_object_unref(msg);
 }
 
+// --- Diarization ---
+
+static void on_diarize_response(GObject *source, GAsyncResult *result,
+                                gpointer userdata) {
+    auto *data = static_cast<DiarizeCallbackData *>(userdata);
+    AppState *state = data->state;
+    int note_index = data->note_index;
+    delete data;
+
+    GError *error = nullptr;
+    GBytes *response_bytes = soup_session_send_and_read_finish(
+        SOUP_SESSION(source), result, &error);
+
+    if (note_index < 0 ||
+        note_index >= static_cast<int>(state->notes.size())) {
+        if (response_bytes) g_bytes_unref(response_bytes);
+        if (error) g_error_free(error);
+        return;
+    }
+
+    VoiceNote &note = state->notes[static_cast<size_t>(note_index)];
+    note.diarizing = false;
+
+    if (error != nullptr) {
+        gtk_label_set_text(GTK_LABEL(state->label),
+                           "Diarization failed: network error");
+        g_warning("Diarization error: %s", error->message);
+        g_error_free(error);
+        refresh_notes_list(state);
+        return;
+    }
+
+    gsize response_len = 0;
+    const char *response_data =
+        static_cast<const char *>(g_bytes_get_data(response_bytes, &response_len));
+
+    JsonParser *parser = json_parser_new();
+    if (!json_parser_load_from_data(parser, response_data,
+                                     static_cast<gssize>(response_len), &error)) {
+        gtk_label_set_text(GTK_LABEL(state->label),
+                           "Diarization failed: invalid response");
+        g_warning("JSON parse error: %s", error->message);
+        g_error_free(error);
+        g_object_unref(parser);
+        g_bytes_unref(response_bytes);
+        refresh_notes_list(state);
+        return;
+    }
+
+    JsonNode *root = json_parser_get_root(parser);
+    JsonObject *obj = json_node_get_object(root);
+
+    if (json_object_has_member(obj, "message")) {
+        const char *err_msg = json_object_get_string_member(obj, "message");
+        char status_buf[256];
+        g_snprintf(status_buf, sizeof(status_buf),
+                   "Diarization failed: %s", err_msg);
+        gtk_label_set_text(GTK_LABEL(state->label), status_buf);
+        g_object_unref(parser);
+        g_bytes_unref(response_bytes);
+        refresh_notes_list(state);
+        return;
+    }
+
+    // Parse segments array for diarized output
+    if (json_object_has_member(obj, "segments")) {
+        JsonArray *segments = json_object_get_array_member(obj, "segments");
+        guint n = json_array_get_length(segments);
+        std::string diarized;
+        std::string full_text;
+        std::string prev_speaker;
+
+        for (guint si = 0; si < n; si++) {
+            JsonObject *seg = json_array_get_object_element(segments, si);
+            const char *text = json_object_has_member(seg, "text")
+                                   ? json_object_get_string_member(seg, "text")
+                                   : "";
+            const char *speaker_id = json_object_has_member(seg, "speaker_id")
+                                         ? json_object_get_string_member(seg, "speaker_id")
+                                         : nullptr;
+
+            full_text += text;
+
+            // Format speaker label: "speaker_0" -> "Speaker 0"
+            std::string speaker_label;
+            if (speaker_id != nullptr) {
+                std::string sid(speaker_id);
+                // Extract number after underscore
+                auto pos = sid.find('_');
+                if (pos != std::string::npos) {
+                    speaker_label = "Speaker " + sid.substr(pos + 1);
+                } else {
+                    speaker_label = sid;
+                }
+            } else {
+                speaker_label = "Speaker ?";
+            }
+
+            std::string current_speaker(speaker_id ? speaker_id : "");
+            if (current_speaker != prev_speaker) {
+                if (!diarized.empty()) {
+                    diarized += "\n\n";
+                }
+                diarized += "[" + speaker_label + "]:";
+                prev_speaker = current_speaker;
+            }
+            diarized += text;
+        }
+
+        note.diarized_transcription = diarized;
+
+        // Save diarized transcription to .diarized.txt sidecar
+        std::filesystem::path diarized_path(note.filepath);
+        diarized_path.replace_extension(".diarized.txt");
+        std::ofstream diarized_file(diarized_path);
+        if (diarized_file) {
+            diarized_file << note.diarized_transcription;
+        }
+
+        // If plain transcription was empty, populate it from the full text
+        if (note.transcription.empty() && !full_text.empty()) {
+            note.transcription = full_text;
+            std::filesystem::path txt_path(note.filepath);
+            txt_path.replace_extension(".txt");
+            std::ofstream txt_file(txt_path);
+            if (txt_file) {
+                txt_file << note.transcription;
+            }
+        }
+    } else {
+        gtk_label_set_text(GTK_LABEL(state->label),
+                           "Diarization failed: no segments in response");
+        g_object_unref(parser);
+        g_bytes_unref(response_bytes);
+        refresh_notes_list(state);
+        return;
+    }
+
+    g_object_unref(parser);
+    g_bytes_unref(response_bytes);
+
+    gtk_label_set_text(GTK_LABEL(state->label), "Diarization complete");
+    refresh_notes_list(state);
+}
+
+static void diarize_note(AppState *state, int note_index) {
+    if (note_index < 0 ||
+        note_index >= static_cast<int>(state->notes.size()))
+        return;
+
+    VoiceNote &note = state->notes[static_cast<size_t>(note_index)];
+
+    GError *error = nullptr;
+    GMappedFile *mapped = g_mapped_file_new(note.filepath.c_str(), FALSE, &error);
+    if (mapped == nullptr) {
+        gtk_label_set_text(GTK_LABEL(state->label),
+                           "Failed to read audio file");
+        if (error) {
+            g_warning("File read error: %s", error->message);
+            g_error_free(error);
+        }
+        note.diarizing = false;
+        refresh_notes_list(state);
+        return;
+    }
+    GBytes *file_bytes = g_mapped_file_get_bytes(mapped);
+    g_mapped_file_unref(mapped);
+
+    SoupMultipart *multipart = soup_multipart_new(SOUP_FORM_MIME_TYPE_MULTIPART);
+    soup_multipart_append_form_string(multipart, "model", "voxtral-mini-latest");
+    soup_multipart_append_form_string(multipart, "diarize", "true");
+    soup_multipart_append_form_string(multipart, "timestamp_granularities",
+                                       "segment");
+
+    std::filesystem::path fp(note.filepath);
+    std::string filename = fp.filename().string();
+    soup_multipart_append_form_file(multipart, "file", filename.c_str(),
+                                     "audio/wav", file_bytes);
+    g_bytes_unref(file_bytes);
+
+    SoupMessage *msg = soup_message_new_from_multipart(
+        "https://api.mistral.ai/v1/audio/transcriptions", multipart);
+    soup_multipart_free(multipart);
+
+    SoupMessageHeaders *headers = soup_message_get_request_headers(msg);
+    std::string auth = "Bearer " + state->api_key;
+    soup_message_headers_replace(headers, "Authorization", auth.c_str());
+
+    auto *cb_data = new DiarizeCallbackData{state, note_index};
+
+    soup_session_send_and_read_async(state->soup_session, msg,
+                                      G_PRIORITY_DEFAULT, nullptr,
+                                      on_diarize_response, cb_data);
+    g_object_unref(msg);
+}
+
+static void on_diarize_clicked(GtkWidget *button, gpointer userdata) {
+    auto *state = static_cast<AppState *>(userdata);
+
+    int note_index = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(button), "note_index"));
+
+    if (note_index < 0 ||
+        note_index >= static_cast<int>(state->notes.size()))
+        return;
+
+    VoiceNote &note = state->notes[static_cast<size_t>(note_index)];
+    note.diarizing = true;
+    refresh_notes_list(state);
+
+    gtk_label_set_text(GTK_LABEL(state->label), "Diarizing...");
+    diarize_note(state, note_index);
+}
+
 static void on_copy_clicked(GtkWidget *button, gpointer userdata) {
     auto *state = static_cast<AppState *>(userdata);
 
@@ -987,11 +1275,66 @@ static void on_copy_clicked(GtkWidget *button, gpointer userdata) {
         return;
 
     const VoiceNote &note = state->notes[static_cast<size_t>(note_index)];
-    if (!note.transcription.empty()) {
+    const std::string &text = !note.diarized_transcription.empty()
+                                  ? note.diarized_transcription
+                                  : note.transcription;
+    if (!text.empty()) {
         GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-        gtk_clipboard_set_text(clipboard, note.transcription.c_str(), -1);
+        gtk_clipboard_set_text(clipboard, text.c_str(), -1);
         gtk_label_set_text(GTK_LABEL(state->label), "Transcription copied");
     }
+}
+
+static void on_save_as_clicked(GtkWidget *button, gpointer userdata) {
+    auto *state = static_cast<AppState *>(userdata);
+
+    int note_index = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(button), "note_index"));
+
+    if (note_index < 0 ||
+        note_index >= static_cast<int>(state->notes.size()))
+        return;
+
+    const VoiceNote &note = state->notes[static_cast<size_t>(note_index)];
+
+    GtkWidget *dialog = gtk_file_chooser_dialog_new(
+        "Save Recording As", GTK_WINDOW(state->window),
+        GTK_FILE_CHOOSER_ACTION_SAVE,
+        "Cancel", GTK_RESPONSE_CANCEL,
+        "Save", GTK_RESPONSE_ACCEPT,
+        nullptr);
+
+    gtk_file_chooser_set_do_overwrite_confirmation(
+        GTK_FILE_CHOOSER(dialog), TRUE);
+
+    // Suggest the original filename
+    std::filesystem::path fp(note.filepath);
+    gtk_file_chooser_set_current_name(
+        GTK_FILE_CHOOSER(dialog), fp.filename().c_str());
+
+    // Add WAV file filter
+    GtkFileFilter *filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, "WAV files");
+    gtk_file_filter_add_pattern(filter, "*.wav");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        char *dest = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        std::error_code ec;
+        std::filesystem::copy_file(
+            note.filepath, dest,
+            std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            gtk_label_set_text(GTK_LABEL(state->label),
+                               "Failed to save file");
+        } else {
+            gtk_label_set_text(GTK_LABEL(state->label),
+                               "Recording saved");
+        }
+        g_free(dest);
+    }
+
+    gtk_widget_destroy(dialog);
 }
 
 static void on_transcribe_clicked(GtkWidget *button, gpointer userdata) {
@@ -1053,6 +1396,22 @@ static void refresh_notes_list(AppState *state) {
             gtk_box_pack_start(GTK_BOX(row_box), transcribe_btn, FALSE, FALSE, 0);
         }
 
+        // Diarize button or spinner
+        if (note.diarizing) {
+            GtkWidget *spinner = gtk_spinner_new();
+            gtk_spinner_start(GTK_SPINNER(spinner));
+            gtk_box_pack_start(GTK_BOX(row_box), spinner, FALSE, FALSE, 0);
+        } else if (state->transcription_available &&
+                   !note.transcription.empty() &&
+                   note.diarized_transcription.empty()) {
+            GtkWidget *diarize_btn = gtk_button_new_with_label("Diarize");
+            g_object_set_data(G_OBJECT(diarize_btn), "note_index",
+                              GINT_TO_POINTER(i));
+            g_signal_connect(diarize_btn, "clicked",
+                             G_CALLBACK(on_diarize_clicked), state);
+            gtk_box_pack_start(GTK_BOX(row_box), diarize_btn, FALSE, FALSE, 0);
+        }
+
         // Copy button (only when transcription exists)
         if (!note.transcription.empty()) {
             GtkWidget *copy_btn =
@@ -1077,6 +1436,17 @@ static void refresh_notes_list(AppState *state) {
                          G_CALLBACK(on_play_clicked), state);
         gtk_box_pack_start(GTK_BOX(row_box), play_btn, FALSE, FALSE, 0);
 
+        // Save As button
+        GtkWidget *save_as_btn =
+            gtk_button_new_from_icon_name("document-save-as",
+                                           GTK_ICON_SIZE_BUTTON);
+        gtk_widget_set_tooltip_text(save_as_btn, "Save recording as...");
+        g_object_set_data(G_OBJECT(save_as_btn), "note_index",
+                          GINT_TO_POINTER(i));
+        g_signal_connect(save_as_btn, "clicked",
+                         G_CALLBACK(on_save_as_clicked), state);
+        gtk_box_pack_start(GTK_BOX(row_box), save_as_btn, FALSE, FALSE, 0);
+
         // Delete button
         GtkWidget *del_btn =
             gtk_button_new_from_icon_name("edit-delete", GTK_ICON_SIZE_BUTTON);
@@ -1100,6 +1470,24 @@ static void refresh_notes_list(AppState *state) {
             gtk_box_pack_start(GTK_BOX(vbox), trans_label, FALSE, FALSE, 0);
         }
 
+        // Diarized transcription text (shown in italic below regular transcription)
+        if (!note.diarized_transcription.empty()) {
+            gchar *markup = g_markup_printf_escaped(
+                "<i>%s</i>", note.diarized_transcription.c_str());
+            GtkWidget *diarized_label = gtk_label_new(nullptr);
+            gtk_label_set_markup(GTK_LABEL(diarized_label), markup);
+            g_free(markup);
+            gtk_label_set_xalign(GTK_LABEL(diarized_label), 0.0);
+            gtk_label_set_line_wrap(GTK_LABEL(diarized_label), TRUE);
+            gtk_label_set_line_wrap_mode(GTK_LABEL(diarized_label),
+                                         PANGO_WRAP_WORD_CHAR);
+            gtk_label_set_max_width_chars(GTK_LABEL(diarized_label), 40);
+            gtk_label_set_selectable(GTK_LABEL(diarized_label), TRUE);
+            gtk_widget_set_margin_start(diarized_label, 4);
+            gtk_widget_set_margin_top(diarized_label, 4);
+            gtk_box_pack_start(GTK_BOX(vbox), diarized_label, FALSE, FALSE, 0);
+        }
+
         gtk_list_box_insert(GTK_LIST_BOX(state->notes_list_box),
                             vbox, -1);
     }
@@ -1120,9 +1508,14 @@ static void on_record_toggled(GtkWidget * /*button*/, gpointer userdata) {
         if (gtk_widget_get_visible(state->save_discard_box)) {
             state->audio_buffer.clear();
             state->live_transcription.clear();
-            if (state->live_transcription_label != nullptr) {
-                gtk_widget_hide(state->live_transcription_label);
-                gtk_widget_set_no_show_all(state->live_transcription_label, TRUE);
+            if (state->live_transcription_scroll != nullptr) {
+                gtk_widget_hide(state->live_transcription_scroll);
+                gtk_widget_set_no_show_all(state->live_transcription_scroll, TRUE);
+            }
+            // Clean up temp file
+            if (!state->live_transcription_tmp_path.empty()) {
+                std::filesystem::remove(state->live_transcription_tmp_path);
+                state->live_transcription_tmp_path.clear();
             }
             gtk_widget_hide(state->save_discard_box);
             gtk_widget_set_no_show_all(state->save_discard_box, TRUE);
@@ -1644,6 +2037,94 @@ static void on_menu_dictation(GtkMenuItem * /*item*/, gpointer user_data) {
     }
 }
 
+// --- Audio preview for settings dialog ---
+
+struct AudioPreview {
+    AppState *state;
+    pa_stream *stream = nullptr;
+    GtkWidget *level_bar = nullptr;
+    double current_level = 0.0;
+};
+
+static void on_preview_stream_read(pa_stream *s, size_t /*nbytes*/,
+                                    void *userdata) {
+    auto *preview = static_cast<AudioPreview *>(userdata);
+
+    const void *data;
+    size_t length;
+
+    while (pa_stream_peek(s, &data, &length) >= 0 && length > 0) {
+        if (data != nullptr) {
+            auto num_samples = length / sizeof(int16_t);
+            auto *samples = static_cast<const int16_t *>(data);
+
+            double peak = calculate_peak_level(samples, num_samples);
+            if (peak >= preview->current_level) {
+                preview->current_level = peak;
+            } else {
+                preview->current_level =
+                    preview->current_level * DECAY_FACTOR +
+                    peak * (1.0 - DECAY_FACTOR);
+            }
+            gtk_level_bar_set_value(GTK_LEVEL_BAR(preview->level_bar),
+                                    preview->current_level);
+        }
+        pa_stream_drop(s);
+    }
+}
+
+static void stop_audio_preview(AudioPreview *preview) {
+    if (preview->stream != nullptr) {
+        pa_stream_disconnect(preview->stream);
+        pa_stream_unref(preview->stream);
+        preview->stream = nullptr;
+    }
+    preview->current_level = 0.0;
+    if (preview->level_bar != nullptr) {
+        gtk_level_bar_set_value(GTK_LEVEL_BAR(preview->level_bar), 0.0);
+    }
+}
+
+static void start_audio_preview(AudioPreview *preview, const char *device) {
+    stop_audio_preview(preview);
+
+    if (!preview->state->pa_ready) return;
+
+    static const pa_sample_spec spec = {
+        .format = PA_SAMPLE_S16LE,
+        .rate = SAMPLE_RATE,
+        .channels = NUM_CHANNELS,
+    };
+
+    preview->stream = pa_stream_new(preview->state->pa_ctx,
+                                     "linscribe-preview", &spec, nullptr);
+    if (preview->stream == nullptr) return;
+
+    pa_stream_set_read_callback(preview->stream, on_preview_stream_read,
+                                 preview);
+
+    pa_buffer_attr attr = {};
+    attr.maxlength = static_cast<uint32_t>(-1);
+    attr.tlength = static_cast<uint32_t>(-1);
+    attr.prebuf = static_cast<uint32_t>(-1);
+    attr.minreq = static_cast<uint32_t>(-1);
+    attr.fragsize = 4410 * sizeof(int16_t);
+
+    if (pa_stream_connect_record(preview->stream, device, &attr,
+                                  PA_STREAM_ADJUST_LATENCY) < 0) {
+        pa_stream_unref(preview->stream);
+        preview->stream = nullptr;
+    }
+}
+
+static void on_device_combo_changed(GtkComboBox *combo, gpointer userdata) {
+    auto *preview = static_cast<AudioPreview *>(userdata);
+    const gchar *device_id = gtk_combo_box_get_active_id(combo);
+    const char *dev = (device_id != nullptr && device_id[0] != '\0')
+                          ? device_id : nullptr;
+    start_audio_preview(preview, dev);
+}
+
 static void on_menu_settings(GtkMenuItem * /*item*/, gpointer user_data) {
     auto *state = static_cast<AppState *>(user_data);
 
@@ -1678,6 +2159,33 @@ static void on_menu_settings(GtkMenuItem * /*item*/, gpointer user_data) {
     }
     gtk_combo_box_set_active(GTK_COMBO_BOX(device_combo), active_index);
     gtk_box_pack_start(GTK_BOX(content), device_combo, FALSE, FALSE, 0);
+
+    // Audio level preview bar
+    AudioPreview preview{};
+    preview.state = state;
+    preview.level_bar = gtk_level_bar_new_for_interval(0.0, 1.0);
+    gtk_level_bar_set_mode(GTK_LEVEL_BAR(preview.level_bar),
+                           GTK_LEVEL_BAR_MODE_CONTINUOUS);
+    gtk_level_bar_remove_offset_value(GTK_LEVEL_BAR(preview.level_bar),
+                                      GTK_LEVEL_BAR_OFFSET_LOW);
+    gtk_level_bar_remove_offset_value(GTK_LEVEL_BAR(preview.level_bar),
+                                      GTK_LEVEL_BAR_OFFSET_HIGH);
+    gtk_level_bar_remove_offset_value(GTK_LEVEL_BAR(preview.level_bar),
+                                      GTK_LEVEL_BAR_OFFSET_FULL);
+    gtk_box_pack_start(GTK_BOX(content), preview.level_bar, FALSE, FALSE, 0);
+
+    // Start preview with currently selected device
+    {
+        const gchar *cur_id =
+            gtk_combo_box_get_active_id(GTK_COMBO_BOX(device_combo));
+        const char *dev = (cur_id != nullptr && cur_id[0] != '\0')
+                              ? cur_id : nullptr;
+        start_audio_preview(&preview, dev);
+    }
+
+    // Restart preview when device selection changes
+    g_signal_connect(device_combo, "changed",
+                     G_CALLBACK(on_device_combo_changed), &preview);
 
     GtkWidget *label = gtk_label_new("Mistral API Key:");
     gtk_label_set_xalign(GTK_LABEL(label), 0.0);
@@ -1763,6 +2271,7 @@ static void on_menu_settings(GtkMenuItem * /*item*/, gpointer user_data) {
         }
     }
 
+    stop_audio_preview(&preview);
     gtk_widget_destroy(dialog);
 }
 
@@ -1786,6 +2295,21 @@ static void activate(GApplication *app, gpointer user_data) {
     ensure_data_dir(state);
     state->audio_device = load_saved_audio_device(state);
     load_notes(state);
+
+    // Clean up any leftover partial transcription file from a previous crash
+    {
+        std::string partial_path =
+            state->data_dir + "/.transcription_in_progress.txt.partial";
+        if (std::filesystem::exists(partial_path)) {
+            auto fsize = std::filesystem::file_size(partial_path);
+            if (fsize > 0) {
+                g_message("Found leftover partial transcription file "
+                          "(%ju bytes) from a previous session — removing",
+                          static_cast<uintmax_t>(fsize));
+            }
+            std::filesystem::remove(partial_path);
+        }
+    }
 
     // Initialize transcription service
     init_transcription_service(state);
@@ -1823,16 +2347,23 @@ static void activate(GApplication *app, gpointer user_data) {
                                       GTK_LEVEL_BAR_OFFSET_FULL);
     gtk_box_pack_start(GTK_BOX(box), state->level_bar, FALSE, FALSE, 0);
 
-    // Live transcription label (hidden by default, shown during recording)
-    state->live_transcription_label = gtk_label_new("");
-    gtk_label_set_xalign(GTK_LABEL(state->live_transcription_label), 0.0);
-    gtk_label_set_line_wrap(GTK_LABEL(state->live_transcription_label), TRUE);
-    gtk_label_set_line_wrap_mode(GTK_LABEL(state->live_transcription_label),
-                                 PANGO_WRAP_WORD_CHAR);
-    gtk_label_set_max_width_chars(GTK_LABEL(state->live_transcription_label), 40);
-    gtk_label_set_selectable(GTK_LABEL(state->live_transcription_label), TRUE);
-    gtk_widget_set_no_show_all(state->live_transcription_label, TRUE);
-    gtk_box_pack_start(GTK_BOX(box), state->live_transcription_label,
+    // Live transcription view (hidden by default, shown during recording)
+    state->live_transcription_scroll = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(
+        GTK_SCROLLED_WINDOW(state->live_transcription_scroll),
+        GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(state->live_transcription_scroll, -1, 150);
+    state->live_transcription_view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(state->live_transcription_view),
+                                FALSE);
+    gtk_text_view_set_cursor_visible(
+        GTK_TEXT_VIEW(state->live_transcription_view), FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(state->live_transcription_view),
+                                 GTK_WRAP_WORD_CHAR);
+    gtk_container_add(GTK_CONTAINER(state->live_transcription_scroll),
+                      state->live_transcription_view);
+    gtk_widget_set_no_show_all(state->live_transcription_scroll, TRUE);
+    gtk_box_pack_start(GTK_BOX(box), state->live_transcription_scroll,
                        FALSE, FALSE, 0);
 
     // Save/Discard button row (hidden by default)
