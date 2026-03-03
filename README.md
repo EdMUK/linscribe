@@ -1,32 +1,55 @@
 # Linscribe
 
-A lightweight Linux desktop app for voice notes and system-wide speech-to-text dictation. Lives in your system tray, records voice memos with one click, and can type transcribed speech directly into any focused application.
+A lightweight Linux desktop app for voice notes, transcription, and system-wide speech-to-text dictation. Lives in your system tray, records voice memos with one click, transcribes them with speaker diarization, and can type transcribed speech directly into any focused application.
 
-Powered by [Mistral's Voxtral](https://docs.mistral.ai/capabilities/audio/) real-time transcription API.
+Powered by [Mistral's Voxtral](https://docs.mistral.ai/capabilities/audio/) real-time and batch transcription APIs.
+
+<p align="center">
+  <img src="screenshots/transcribe.png" alt="Linscribe main window showing recorded notes with transcriptions" width="580">
+</p>
 
 ## Features
 
-**Voice Notes**
-- Record, save, play back, and delete voice memos from a minimal GTK3 window
-- Notes stored as WAV files in `~/.local/share/linscribe/`
-- Real-time transcription displayed live as you record
-- Batch transcription of saved notes with one click
-- Copy transcription text to clipboard
-- **Audio device selection** &mdash; choose any input source in Settings, including output monitors (e.g. "Monitor of Built-in Audio") to transcribe system audio playing through speakers or headphones
+### Voice Notes
 
-**Speak To Type**
-- Activate from the system tray menu to start typing speech into any focused application
-- Works with terminals, editors, browsers, and any other window
-- Tray icon changes to indicate active speech-to-type
+Record, transcribe, and manage voice memos from a minimal GTK3 window.
+
+- **Live transcription** &mdash; speech appears on screen in real time as you record, in a scrollable view that keeps up with long recordings
+- **Batch transcription** &mdash; transcribe any saved note with one click
+- **Speaker diarization** &mdash; identify who said what in multi-speaker recordings, with labeled `[Speaker 0]`, `[Speaker 1]` output
+- **Export recordings** &mdash; save WAV files to any location with the Save As button
+- **Copy to clipboard** &mdash; one-click copy of transcription text (prefers diarized version when available)
+- **Playback** &mdash; listen to any saved note directly in the app
+- **Crash-safe transcription** &mdash; live transcription text is written incrementally to disk during recording, so it survives unexpected crashes
+
+### Speak To Type
+
+Activate from the system tray to start typing speech into any focused application &mdash; terminals, editors, browsers, anything.
+
+- Tray icon changes to indicate active dictation
 - Automatic detection of the best available typing backend:
   - **Wayland** (GNOME, KDE, Sway, etc.): `ydotool`, `wtype`, or `xdotool`
   - **X11**: `libxdo` (direct, no subprocess overhead)
   - **X11 global hotkey**: `Ctrl+Shift+Space` via keybinder (configurable in Settings)
 
-**System Tray**
-- Runs as a tray application &mdash; close the window and it keeps running
-- Starts minimised to tray &mdash; open the voice notes window from the menu when needed
+### Record from Any Audio Source
+
+Choose any PulseAudio input in Settings, including output monitors (e.g. "Monitor of Built-in Audio") to transcribe system audio playing through speakers or headphones. A live level meter shows the signal from the selected source so you can verify it's working before you leave the dialog.
+
+<p align="center">
+  <img src="screenshots/settings.png" alt="Settings dialog with audio device selector, live level meter, API key, and hotkey" width="480">
+</p>
+
+### System Tray
+
+Linscribe runs as a tray application &mdash; close the window and it keeps running in the background.
+
+- Starts minimised to tray
 - Quick access to Transcribe (open window), Speak To Type, Settings, and Quit
+
+<p align="center">
+  <img src="screenshots/tray.png" alt="System tray menu" width="240">
+</p>
 
 ## Install
 
@@ -126,10 +149,14 @@ The saved key is stored in `~/.local/share/linscribe/mistral_api_key`.
 ### Record a voice note
 
 1. Click the tray icon and select **Transcribe** to open the main window
-2. Click **Record** to start recording (live transcription appears as you speak)
+2. Click **Record** to start recording &mdash; live transcription appears in a scrollable area as you speak
 3. Click **Stop** when finished
 4. Click **Save** to keep the note or **Discard** to throw it away
-5. Saved notes appear in the list with playback, transcribe, copy, and delete controls
+5. Saved notes appear in the list with controls to diarize, copy, play, export, and delete
+
+### Diarize a recording
+
+After a note has been transcribed, click **Diarize** to identify individual speakers. The result appears below the regular transcription with labels like `[Speaker 0]` and `[Speaker 1]`. Diarized text is saved alongside the note and preferred when copying to the clipboard.
 
 ### Speak To Type
 
@@ -146,9 +173,12 @@ All data is stored in `~/.local/share/linscribe/`:
 |------|---------|
 | `note_*.wav` | Recorded voice notes |
 | `note_*.txt` | Transcription sidecar files |
+| `note_*.diarized.txt` | Speaker-diarized transcription sidecar files |
 | `mistral_api_key` | Saved API key |
 | `dictation_hotkey` | Custom hotkey binding (default: `<Ctrl><Shift>space`) |
 | `audio_device` | Selected PulseAudio source name (empty = system default) |
+
+During recording, a temporary `.transcription_in_progress.txt.partial` file is written incrementally as a crash-safety measure. It is automatically cleaned up on save, discard, or next launch.
 
 ## Tech stack
 
